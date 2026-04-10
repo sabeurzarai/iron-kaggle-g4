@@ -1,0 +1,1 @@
+R2 score based on first model ==> 0.8
