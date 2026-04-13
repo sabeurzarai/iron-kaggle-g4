@@ -1,95 +1,126 @@
 # iron-kaggle-g4
+### Retail Sales Forecasting — IronHack Kaggle Competition
 
+---
 
-👉 No NaN values
+## Project Overview
 
-dataset has following issues:
+Predict daily `sales` for retail stores using historical data (2013–2015).
 
-1. Fake column
-Unnamed: 0 → useless
-Done
+| | |
+|---|---|
+| **Dataset** | 640,840 rows × 10 columns |
+| **Target** | `sales` (integer) |
+| **Best model** | XGBoost |
+| **R² Validation** | 84.23% |
+| **RMSE** | 1,233 euros |
 
-2. Wrong type
-date → string (needs conversion)
-# Why it's a problem:
-A raw string like "2013-04-18" is meaningless to a model — it can't understand that April is spring, or that 2015 is after 2013. You need to break it into numeric features the model can actually use.
-How to fix it — full date extraction:
-# Step 1: Convert string → datetime
-df['date'] = pd.to_datetime(df['date'])
+---
 
-# Step 2: Extract useful features
-df['year']        = df['date'].dt.year
-df['month']       = df['date'].dt.month
-df['day']         = df['date'].dt.day
-df['week']        = df['date'].dt.isocalendar().week.astype(int)
-df['is_weekend']  = df['date'].dt.dayofweek.isin([5, 6]).astype(int)
+## Results
 
-# Step 3: Drop the original date column
+| Model | R² Train | R² Validation | RMSE | R² Difference |
+|---|---|---|---|---|
+| **XGBoost** | 84.56% | **84.23%** | **1,233** | 0.0033 |
+| Random Forest | 81.70% | 81.08% | 1,351 | 0.0062 |
+| Linear Regression | 73.50% | 73.66% | 1,594 | -0.0016 |
+
+XGBoost was selected as the winner: best R² Validation, lowest RMSE, and smallest R² Difference (no overfitting).
+
+---
+
+## Data Quality Issues Found
+
+No missing values. However, 4 structural issues required preprocessing:
+
+### 1. Fake column
+`Unnamed: 0` is a row index — dropped immediately, no predictive value.
+
+### 2. Wrong type — date stored as string
+A raw string like `"2013-04-18"` is meaningless to a model. Extracted into numeric features:
+
+```python
+df['date']       = pd.to_datetime(df['date'])
+df['year']       = df['date'].dt.year
+df['month']      = df['date'].dt.month
+df['day']        = df['date'].dt.day
+df['week']       = df['date'].dt.isocalendar().week.astype(int)
+df['is_weekend'] = df['date'].dt.dayofweek.isin([5, 6]).astype(int)
 df = df.drop(columns=['date'])
+```
 
+> REAL_DATA uses `DD/MM/YYYY` format — handled with `dayfirst=True`.
 
-3. Categorical data
-state_holiday → text (needs encoding)
+### 3. Categorical data — state_holiday stored as text
+Values: `'0'` (no holiday), `'a'` (public), `'b'` (easter), `'c'` (christmas).
 
-Why it's a problem for Linear Regression specifically:
-Linear regression does math on features — multiply, add, etc. If you label encode:
-'0' → 0
-'a' → 1
-'b' → 2
-'c' → 3
-The model assumes c is 3x bigger than a and b is between a and c — that's mathematically wrong. Holidays have no natural order.
-Tree models (Random Forest, XGBoost) don't care — they just split on values. Linear Regression does care.
-Fix: One-Hot Encoding (OHE)
-# Creates a binary column for each category
+Linear Regression requires One-Hot Encoding — label encoding would imply a false numeric order (`c > b > a`).
+
+```python
+df['state_holiday'] = df['state_holiday'].astype(str)
 df = pd.get_dummies(df, columns=['state_holiday'], prefix='holiday', drop_first=True)
+# drop_first=True avoids the dummy variable trap (multicollinearity)
+```
 
-# Result:
-# holiday_a   holiday_b   holiday_c
-#     0           0           0      ← '0' (no holiday) - reference
-#     1           0           0      ← 'a' (public holiday)
-#     0           1           0      ← 'b' (easter)
-#     0           0           1      ← 'c' (christmas)
-drop_first=True drops holiday_0 to avoid the dummy variable trap (multicollinearity) — another Linear Regression specific problem.
-Apply same encoding to test data safely:
-# Train
-df = pd.get_dummies(df, columns=['state_holiday'], prefix='holiday', drop_first=True)
+| Model | Encoding used |
+|---|---|
+| Linear Regression | One-Hot Encoding (required) |
+| Random Forest | One-Hot Encoding |
+| XGBoost | One-Hot Encoding |
 
-# Test - reindex to guarantee same columns as training
-df_test = pd.get_dummies(df_test, columns=['state_holiday'], prefix='holiday', drop_first=True)
-df_test = df_test.reindex(columns=df.columns, fill_value=0)
+### 4. Logical edge cases — closed stores and anomaly
 
-Summary — which encoding per model:
-Model Use
-Linear Regression One-Hot Encoding (OHE)
-Random Forest Label Encoding or OHE (both fine)
-XGBoost Label Encoding or OHE (both fine)
-Since you're using both Linear Regression and tree models → use OHE for everyone, it works correctly across all models.
+**Closed stores:** `open = 0` always means `sales = 0` (108,824 rows).
+These rows were removed from training. At prediction time, closed stores are forced to `sales = 0`.
 
+```
+Original rows : 640,840
+After removing closed stores : 532,016
+```
 
+**Statistical anomaly:** 1 row where `open = 1`, `customers = 5`, `sales = 0`.
+Out of 531,986 open days with customers, this is the only zero-sales day (0.0002%).
+Store 948 normally makes €6,898 average sales when open. This is a data entry error — kept as negligible impact (1 out of 640K rows).
 
-4. Logical edge cases
-drop all close stores
-original row = 640840
-new row = 532016
+---
 
-Customers walk in, browse, but don't buy
-Store is open for maintenance/restocking
-Promotion brought people in but nothing appealed to them
-Verdict — it IS an anomaly, and here's why:
-Out of 531,986 open days with customers, only 1 single day has sales=0. That's 0.0002%.
-Store 948 normally makes €6,898 average sales when open — on that specific day it made €0 with 5 customers.
-The difference between "real case" vs "anomaly":
-ScenarioﾠReal case?ﾠThis dataset?
-Open + customers → no salesﾠYes, possibleﾠHappens 1 out of 531,986 times
-Open + customers → some salesﾠNormalﾠHappens 531,985 times
-It's not impossible — but it's statistically extreme (0.0002%). In data science that's called an outlier, not a pattern. The model should not learn from it.
-Conclusion — keep it or drop it?
-# KEEP IT - it's 1 row out of 640K, negligible impact either way
-For the presentation say: "We identified 1 statistical outlier — a store open with customers but zero sales. Given it represents 0.0002% of data we kept it as it has negligible impact on model performance."
-That shows data awareness without wasting time on 1 row.
+## Preprocessing Pipeline
 
+```
+1. Drop Unnamed: 0
+2. Remove anomalous row (open + customers > 0 + sales = 0)
+3. Remove closed stores (open = 0)
+4. Convert date string → extract year, month, day, week, is_weekend
+5. One-Hot Encode state_holiday (drop_first=True)
+6. Align REAL_DATA columns to training feature_columns
+7. Force closed stores = 0 at prediction time
+```
 
-👉 These are data quality problems, not missing values
-We verified that the dataset contained no missing values. However, we identified structural issues such as an unnecessary index column, categorical variables, and date formatting, which required preprocessing.
+---
 
+## Repository Structure
 
+```
+iron-kaggle-g4/
+├── data/
+│   ├── training.csv       # 640,840 rows — training data
+│   ├── REAL_DATA.csv      # 71,205 rows — test data (no sales column)
+│   └── group_4.csv        # Final predictions (submitted)
+├── project/
+│   └── g4_notebook.ipynb  # Full pipeline: EDA → preprocessing → 3 models → export
+├── Presentation_G4_final.pptx
+└── README.md
+```
+
+---
+
+## How to Run
+
+```bash
+# Open the notebook and run all cells top to bottom
+jupyter notebook project/g4_notebook.ipynb
+```
+
+Outputs:
+- Model comparison table printed to console
+- `data/group_4.csv` — predictions using the best model (XGBoost)
